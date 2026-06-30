@@ -9,7 +9,6 @@ import yfinance as yf
 # ==========================================
 # 1. 환경 변수 및 초기 세팅
 # ==========================================
-# .strip()을 추가하여 눈에 보이지 않는 공백과 줄바꿈(엔터) 문자를 강제로 제거합니다.
 NOTION_TOKEN = os.environ.get('NOTION_TOKEN', '').strip()
 PAGE_ID = os.environ.get('NOTION_PAGE_ID', '').strip()
 
@@ -19,11 +18,9 @@ if not NOTION_TOKEN or not PAGE_ID:
 
 notion = Client(auth=NOTION_TOKEN)
 
-# --- [핵심 수정] 시간대에 따른 대상 날짜 및 시차 조절 로직 ---
 now = datetime.datetime.now()
 
-# 만약 오전 실행(예: 미국 장 마감 직후인 오전 9시 이전)이라면 
-# 달력상 날짜는 오늘이지만, 실제 데이터는 '어제 장'의 마감 리포트이므로 어제 날짜를 타겟팅합니다.
+# 오전 실행 시 '어제 장' 마감 데이터로 간주
 if now.hour < 9: 
     target_date = now - datetime.timedelta(days=1)
     print(f"🌅 오전 업데이트 모드: {target_date.strftime('%Y-%m-%d')} 리포트를 최신 해외 데이터로 업데이트합니다.")
@@ -38,13 +35,12 @@ month_title = f"▶ {target_date.year}년 {target_date.month}월"
 daily_title = f"▶ {target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
-# 2. 금융 데이터 수집 및 색상 판별 함수
+# 2. 금융 데이터 수집
 # ==========================================
 def get_ticker_data(ticker_symbol, display_name):
     try:
         ticker = yf.Ticker(ticker_symbol)
-        hist = ticker.history(period="5d") # 휴장일 방어용 5일 데이터
-        
+        hist = ticker.history(period="5d") 
         if len(hist) >= 2:
             prev_close = hist['Close'].iloc[-2]
             current_price = hist['Close'].iloc[-1]
@@ -69,7 +65,7 @@ def get_ticker_data(ticker_symbol, display_name):
     return {"content": f"{display_name} : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 RSS 수집 및 HTML 정제 함수
+# 3. 뉴스 데이터 수집
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -97,7 +93,7 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
         return []
 
 # ==========================================
-# 4. 노션 블록(Payload) 생성기
+# 4. 노션 블록 생성기
 # ==========================================
 def create_bullet_block(text, color="default", children=None):
     block = {
@@ -141,9 +137,6 @@ def create_toggle_block(title_text, children_blocks):
         }
     }
 
-# ==========================================
-# 5. [핵심 수정] 노션 중복 방지 및 생성 함수
-# ==========================================
 def get_or_create_month_toggle(page_id, month_name):
     response = notion.blocks.children.list(block_id=page_id)
     for block in response.get('results', []):
@@ -158,21 +151,19 @@ def get_or_create_month_toggle(page_id, month_name):
     return new_toggle['results'][0]['id']
 
 def delete_existing_daily_toggle(month_toggle_id, daily_name):
-    """이미 만들어진 오늘자 날짜 토글이 있다면 중복 방지를 위해 삭제합니다."""
     response = notion.blocks.children.list(block_id=month_toggle_id)
     for block in response.get('results', []):
         if block['type'] == 'toggle':
             rich_text = block['toggle']['rich_text']
             if rich_text and rich_text[0]['text']['content'] == daily_name:
-                print(f"♻️ 기존에 작성된 '{daily_name}' 블록을 발견하여 업데이트(덮어쓰기)를 위해 제거합니다.")
+                print(f"♻️ 기존 '{daily_name}' 블록 덮어쓰기를 위해 정리 중...")
                 notion.blocks.delete(block_id=block['id'])
                 break
 
 # ==========================================
-# 6. 메인 실행부
+# 5. 메인 실행 (깊이 제한 우회 3단계 로직 적용)
 # ==========================================
 def main():
-    # 1) 금융 지표 수집
     kospi = get_ticker_data("^KS11", "코스피")
     nasdaq = get_ticker_data("^IXIC", "나스닥")
     wti = get_ticker_data("CL=F", "WTI")
@@ -186,7 +177,6 @@ def main():
     usdkrw = get_ticker_data("KRW=X", "원달러")
     jpykrw = get_ticker_data("JPYKRW=X", "원엔화")
 
-    # 2) 뉴스 수집
     google_url = "https://news.google.com/rss/search?q=%EA%B5%AD%EB%82%B4%20%EC%A6%9D%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"
     ko_news = fetch_rss_news(google_url, limit=5, is_google=True)
     cnbc_top = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100003114", limit=4)
@@ -194,7 +184,6 @@ def main():
     cnbc_economy = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100004183", limit=4)
     cnbc_finance = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100006626", limit=4)
 
-    # 3) 하위 항목 배열 조립
     commodity_children = [
         create_bullet_block(wti["content"], wti["color"]),
         create_bullet_block(gas["content"], gas["color"]),
@@ -208,6 +197,8 @@ def main():
         create_bullet_block(usdkrw["content"], usdkrw["color"]),
         create_bullet_block(jpykrw["content"], jpykrw["color"])
     ]
+    
+    # 뉴스 카테고리별 블록 
     news_children = [
         create_toggle_block("🇰🇷 국내 증시 (Google News)", [create_news_link_block(n["title"], n["link"], n["summary"]) for n in ko_news]),
         create_toggle_block("🌟 CNBC Top News", [create_news_link_block(n["title"], n["link"], n["summary"]) for n in cnbc_top]),
@@ -216,35 +207,52 @@ def main():
         create_toggle_block("💰 CNBC Finance", [create_news_link_block(n["title"], n["link"], n["summary"]) for n in cnbc_finance])
     ]
 
-    # 최종 노트 레이아웃 설계 (요청하신 완벽한 대등 분리 구조)
-    daily_payload = [
-        create_bullet_block(kospi["content"], kospi["color"]),
-        create_bullet_block(nasdaq["content"], nasdaq["color"]),
-        create_toggle_block("▶ 상품", commodity_children),
-        create_bullet_block(dxy["content"], dxy["color"]), # 달러 인덱스 독립 형제 배치
-        create_toggle_block("▶ 환율", fx_children),
-        create_toggle_block("▼ 주요 뉴스", news_children)
-    ]
-
-    # 4) 노션 업로드 연동
     try:
         month_toggle_id = get_or_create_month_toggle(PAGE_ID, month_title)
-        
-        # 중복 방지: 이미 생성된 같은 날짜의 토글이 있다면 과감히 삭제 후 재생성합니다.
         delete_existing_daily_toggle(month_toggle_id, daily_title)
         
-        notion.blocks.children.append(
+        # [Step 1] 일간 토글(껍데기) 생성
+        daily_response = notion.blocks.children.append(
             block_id=month_toggle_id,
             children=[{
                 "object": "block",
                 "type": "toggle",
                 "toggle": {
-                    "rich_text": [{"type": "text", "text": {"content": daily_title}, "annotations": {"bold": True}}],
-                    "children": daily_payload
+                    "rich_text": [{"type": "text", "text": {"content": daily_title}, "annotations": {"bold": True}}]
                 }
             }]
         )
-        print("✅ 노션 데일리 매크로 노트 업데이트 성공!")
+        daily_toggle_id = daily_response['results'][0]['id']
+
+        # [Step 2] 지수, 상품, 환율 및 '주요 뉴스' 껍데기 추가
+        daily_basic_payload = [
+            create_bullet_block(kospi["content"], kospi["color"]),
+            create_bullet_block(nasdaq["content"], nasdaq["color"]),
+            create_toggle_block("▶ 상품", commodity_children),
+            create_bullet_block(dxy["content"], dxy["color"]),
+            create_toggle_block("▶ 환율", fx_children),
+            {
+                "object": "block",
+                "type": "toggle",
+                "toggle": {
+                    "rich_text": [{"type": "text", "text": {"content": "▼ 주요 뉴스"}, "annotations": {"bold": True}}]
+                }
+            }
+        ]
+        content_response = notion.blocks.children.append(
+            block_id=daily_toggle_id,
+            children=daily_basic_payload
+        )
+        # 방금 넣은 배열의 맨 마지막 요소가 '주요 뉴스' 토글의 ID입니다.
+        news_toggle_id = content_response['results'][-1]['id']
+
+        # [Step 3] 에러가 났던 깊은 계층의 뉴스를 해당 '주요 뉴스' 토글 안에 안전하게 주입
+        notion.blocks.children.append(
+            block_id=news_toggle_id,
+            children=news_children
+        )
+        
+        print("✅ 노션 데일리 매크로 노트 업데이트 완벽 성공!")
     except Exception as e:
         print(f"❌ 노션 API 연동 중 오류 발생: {e}")
 
