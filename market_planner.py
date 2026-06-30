@@ -9,8 +9,9 @@ import yfinance as yf
 # ==========================================
 # 1. 환경 변수 및 초기 세팅
 # ==========================================
-NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
-PAGE_ID = os.environ.get('NOTION_PAGE_ID') # 최상위 일반 노트 페이지 ID
+# .strip()을 추가하여 눈에 보이지 않는 공백과 줄바꿈(엔터) 문자를 강제로 제거합니다.
+NOTION_TOKEN = os.environ.get('NOTION_TOKEN', '').strip()
+PAGE_ID = os.environ.get('NOTION_PAGE_ID', '').strip()
 
 if not NOTION_TOKEN or not PAGE_ID:
     print("❌ 환경 변수(NOTION_TOKEN 또는 NOTION_PAGE_ID)가 설정되지 않았습니다.")
