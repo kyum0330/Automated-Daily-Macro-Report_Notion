@@ -31,8 +31,8 @@ else:
 days = ["월", "화", "수", "목", "금", "토", "일"]
 day_of_week = days[target_date.weekday()]
 
-month_title = f"▶ {target_date.year}년 {target_date.month}월"
-daily_title = f"▶ {target_date.month}월 {target_date.day}일 ({day_of_week})"
+month_title = f"{target_date.year}년 {target_date.month}월"
+daily_title = f"{target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
 # 2. 금융 데이터 수집
