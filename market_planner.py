@@ -228,14 +228,14 @@ def main():
         daily_basic_payload = [
             create_bullet_block(kospi["content"], kospi["color"]),
             create_bullet_block(nasdaq["content"], nasdaq["color"]),
-            create_toggle_block("▶ 상품", commodity_children),
+            create_toggle_block("📦 상품", commodity_children),
             create_bullet_block(dxy["content"], dxy["color"]),
-            create_toggle_block("▶ 환율", fx_children),
+            create_toggle_block("💱 환율", fx_children),
             {
                 "object": "block",
                 "type": "toggle",
                 "toggle": {
-                    "rich_text": [{"type": "text", "text": {"content": "▼ 주요 뉴스"}, "annotations": {"bold": True}}]
+                    "rich_text": [{"type": "text", "text": {"content": "✅ 주요 뉴스"}, "annotations": {"bold": True}}]
                 }
             }
         ]
