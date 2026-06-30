@@ -164,7 +164,7 @@ def delete_existing_daily_toggle(month_toggle_id, daily_name):
 # 5. 메인 실행 (깊이 제한 우회 3단계 로직 적용)
 # ==========================================
 def main():
-    kospi = get_ticker_data("^KS11", "**코스피**")
+    kospi = get_ticker_data("^KS11", "코스피")
     nasdaq = get_ticker_data("^IXIC", "나스닥")
     wti = get_ticker_data("CL=F", "WTI")
     gas = get_ticker_data("NG=F", "천연가스")
