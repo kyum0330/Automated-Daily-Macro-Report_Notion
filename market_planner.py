@@ -35,13 +35,12 @@ month_title = f"▶ {target_date.year}년 {target_date.month}월"
 daily_title = f"▶ {target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
-# 2. 금융 데이터 수집 및 텍스트 쪼개기 가공
+# 2. 금융 데이터 수집
 # ==========================================
 def get_ticker_data(ticker_symbol, display_name):
     try:
         ticker = yf.Ticker(ticker_symbol)
-        hist = ticker.history(period="5d") # 주말 방어용 5일 데이터
-        
+        hist = ticker.history(period="5d") 
         if len(hist) >= 2:
             prev_close = hist['Close'].iloc[-2]
             current_price = hist['Close'].iloc[-1]
@@ -66,7 +65,7 @@ def get_ticker_data(ticker_symbol, display_name):
     return {"name": display_name, "value": " : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 데이터 수집 및 정제
+# 3. 뉴스 데이터 수집
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -94,61 +93,45 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
         return []
 
 # ==========================================
-# 4. [💡 핵심 수정] 지표명 Bold 처리 전용 블록 생성기
+# 4. 노션 블록 생성기
 # ==========================================
 def create_split_bullet_block(data_dict):
-    """지표명은 진하게(default 색상), 수치는 일반체(빨강/파랑)로 쪼개어 한 줄로 합칩니다."""
+    """지표명은 Bold, 수치는 등락 색상으로 구분"""
     return {
         "object": "block",
         "type": "bulleted_list_item",
         "bulleted_list_item": {
             "rich_text": [
-                {
-                    "type": "text",
-                    "text": {"content": data_dict["name"]},
-                    "annotations": {"bold": True, "color": "default"} # 지표 제목만 Bold
-                },
-                {
-                    "type": "text",
-                    "text": {"content": data_dict["value"]},
-                    "annotations": {"bold": False, "color": data_dict["color"]} # 수치에만 색상 부여
-                }
+                {"type": "text", "text": {"content": data_dict["name"]}, "annotations": {"bold": True, "color": "default"}},
+                {"type": "text", "text": {"content": data_dict["value"]}, "annotations": {"bold": False, "color": data_dict["color"]}}
             ]
         }
     }
 
 def create_news_combined_block(title, url, summary_text):
-    """중중 제한을 우회하기 위해 제목(Bold)과 요약본(Gray)을 하나의 불릿 블록으로 통합합니다."""
+    """제목(링크)과 요약을 하나의 블록으로 묶어 계층 에러 방지"""
     return {
         "object": "block",
         "type": "bulleted_list_item",
         "bulleted_list_item": {
             "rich_text": [
-                {
-                    "type": "text",
-                    "text": {"content": f"{title}\n", "link": {"url": url}},
-                    "annotations": {"bold": True} # 기사 제목만 Bold 및 링크
-                },
-                {
-                    "type": "text",
-                    "text": {"content": f"- 요약: {summary_text}"},
-                    "annotations": {"color": "gray"} # 요약본은 회색 처리
-                }
+                {"type": "text", "text": {"content": f"{title}\n", "link": {"url": url}}, "annotations": {"bold": True}},
+                {"type": "text", "text": {"content": f"- 요약: {summary_text}"}, "annotations": {"color": "gray"}}
             ]
         }
     }
 
-def create_toggle_block(title_text, children_blocks):
-    return {
+def create_toggle_block(title_text, children_blocks=None):
+    block = {
         "object": "block",
         "type": "toggle",
         "toggle": {
-            "rich_text": [{"type": "text", "text": {"content": title_text}, "annotations": {"bold": True}}],
-            "children": children_blocks if children_blocks else [
-                {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": "오늘 등록된 뉴스가 없습니다."}}]}}
-            ]
+            "rich_text": [{"type": "text", "text": {"content": title_text}, "annotations": {"bold": True}}]
         }
     }
+    if children_blocks:
+        block["toggle"]["children"] = children_blocks
+    return block
 
 def get_or_create_month_toggle(page_id, month_name):
     response = notion.blocks.children.list(block_id=page_id)
@@ -159,7 +142,7 @@ def get_or_create_month_toggle(page_id, month_name):
                 return block['id']
     new_toggle = notion.blocks.children.append(
         block_id=page_id,
-        children=[{"object": "block", "type": "toggle", "toggle": {"rich_text": [{"type": "text", "text": {"content": month_name}, "annotations": {"bold": True}}]}}]
+        children=[create_toggle_block(month_name)]
     )
     return new_toggle['results'][0]['id']
 
@@ -174,10 +157,10 @@ def delete_existing_daily_toggle(month_toggle_id, daily_name):
                 break
 
 # ==========================================
-# 5. 메인 실행 로직
+# 5. 메인 실행 (3단계 분할 전송 로직)
 # ==========================================
 def main():
-    # 1) 금융 지표 수집
+    print("⏳ 데이터 수집 중...")
     kospi = get_ticker_data("^KS11", "코스피")
     nasdaq = get_ticker_data("^IXIC", "나스닥")
     wti = get_ticker_data("CL=F", "WTI")
@@ -191,66 +174,5 @@ def main():
     usdkrw = get_ticker_data("KRW=X", "원달러")
     jpykrw = get_ticker_data("JPYKRW=X", "원엔화")
 
-    # 2) 뉴스 수집
     google_url = "https://news.google.com/rss/search?q=%EA%B5%AD%EB%82%B4%20%EC%A6%9D%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"
-    ko_news = fetch_rss_news(google_url, limit=5, is_google=True)
-    cnbc_top = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100003114", limit=4)
-    cnbc_world = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100727362", limit=4)
-    cnbc_economy = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100004183", limit=4)
-    cnbc_finance = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100006626", limit=4)
-
-    # 3) 하위 항목 배열 조립 (Bold 분리 생성기 적용)
-    commodity_children = [
-        create_split_bullet_block(wti),
-        create_split_bullet_block(gas),
-        create_split_bullet_block(gold),
-        create_split_bullet_block(silver),
-        create_split_bullet_block(copper),
-        create_split_bullet_block(corn),
-        create_split_bullet_block(rice)
-    ]
-    fx_children = [
-        create_split_bullet_block(usdkrw),
-        create_split_bullet_block(jpykrw)
-    ]
-    
-    news_children = [
-        create_toggle_block("🇰🇷 국내 증시 (Google News)", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in ko_news]),
-        create_toggle_block("🌟 CNBC Top News", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_top]),
-        create_toggle_block("🌍 CNBC World News", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_world]),
-        create_toggle_block("📊 CNBC Economy", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_economy]),
-        create_toggle_block("💰 CNBC Finance", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_finance])
-    ]
-
-    # 최종 페이로드 조립
-    daily_payload = [
-        create_split_bullet_block(kospi),
-        create_split_bullet_block(nasdaq),
-        create_toggle_block("▶ 상품", commodity_children),
-        create_split_bullet_block(dxy), # 달러 인덱스 독립 배치
-        create_toggle_block("▶ 환율", fx_children),
-        create_toggle_block("▼ 주요 뉴스", news_children)
-    ]
-
-    # 4) 노션 API 전송
-    try:
-        month_toggle_id = get_or_create_month_toggle(PAGE_ID, month_title)
-        delete_existing_daily_toggle(month_toggle_id, daily_title)
-        
-        notion.blocks.children.append(
-            block_id=month_toggle_id,
-            children=[{
-                "object": "block",
-                "type": "toggle",
-                "toggle": {
-                    "rich_text": [{"type": "text", "text": {"content": daily_title}, "annotations": {"bold": True}}],
-                    "children": daily_payload
-                }
-            }]
-        )
-        print("✅ 노션 데일리 매크로 노트 업데이트 완벽 성공!")
-    except Exception as e:
-        print(f"❌ 노션 API 연동 중 오류 발생: {e}")
-
-if __name__ == "__main__":
-    main()
+    ko_news = fetch_rss
