@@ -18,9 +18,11 @@ if not NOTION_TOKEN or not PAGE_ID:
 
 notion = Client(auth=NOTION_TOKEN)
 
-now = datetime.datetime.now()
+# 💡 [핵심 반영 1] 깃허브 서버 시간을 무조건 한국 시간(KST)으로 강제 변환
+KST = datetime.timezone(datetime.timedelta(hours=9))
+now = datetime.datetime.now(KST)
 
-# 오전 실행 시 '어제 장' 마감 데이터로 간주
+# 한국 시간(KST) 기준으로 오전/오후 판별
 if now.hour < 9: 
     target_date = now - datetime.timedelta(days=1)
     print(f"🌅 오전 업데이트 모드: {target_date.strftime('%Y-%m-%d')} 리포트를 최신 해외 데이터로 업데이트합니다.")
@@ -31,8 +33,8 @@ else:
 days = ["월", "화", "수", "목", "금", "토", "일"]
 day_of_week = days[target_date.weekday()]
 
-month_title = f"▶ {target_date.year}년 {target_date.month}월"
-daily_title = f"▶ {target_date.month}월 {target_date.day}일 ({day_of_week})"
+month_title = f"{target_date.year}년 {target_date.month}월"
+daily_title = f"{target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
 # 2. 금융 데이터 수집
@@ -58,6 +60,7 @@ def get_ticker_data(ticker_symbol, display_name):
                 color = "default"
                 sign = ""
                 
+            # 💡 [핵심 반영 2] 볼드체 분리를 위해 name, value, color를 딕셔너리로 쪼개서 반환
             value_text = f" : {current_price:,.2f} ({sign}{change_percent:.2f}%)"
             return {"name": display_name, "value": value_text, "color": color}
     except Exception as e:
@@ -93,10 +96,10 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
         return []
 
 # ==========================================
-# 4. 노션 블록 생성기
+# 4. 노션 블록 생성기 (깊이 제한 우회 및 스타일링)
 # ==========================================
+# 💡 [핵심 반영 3] 지표명은 Bold, 수치는 등락 색상으로 구분하는 생성기
 def create_split_bullet_block(data_dict):
-    """지표명은 Bold, 수치는 등락 색상으로 구분"""
     return {
         "object": "block",
         "type": "bulleted_list_item",
@@ -108,8 +111,8 @@ def create_split_bullet_block(data_dict):
         }
     }
 
+# 💡 [핵심 반영 4] 노션 중첩 에러를 막기 위해 제목과 요약을 한 블록으로 합침
 def create_news_combined_block(title, url, summary_text):
-    """제목(링크)과 요약을 하나의 블록으로 묶어 계층 에러 방지"""
     return {
         "object": "block",
         "type": "bulleted_list_item",
@@ -175,4 +178,54 @@ def main():
     jpykrw = get_ticker_data("JPYKRW=X", "원엔화")
 
     google_url = "https://news.google.com/rss/search?q=%EA%B5%AD%EB%82%B4%20%EC%A6%9D%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"
-    ko_news = fetch_rss
+    ko_news = fetch_rss_news(google_url, limit=5, is_google=True)
+    cnbc_top = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100003114", limit=4)
+    cnbc_world = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100727362", limit=4)
+    cnbc_economy = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100004183", limit=4)
+    cnbc_finance = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100006626", limit=4)
+
+    commodity_children = [create_split_bullet_block(x) for x in [wti, gas, gold, silver, copper, corn, rice]]
+    fx_children = [create_split_bullet_block(usdkrw), create_split_bullet_block(jpykrw)]
+    
+    news_children = [
+        create_toggle_block("🇰🇷 국내 증시 (Google News)", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in ko_news]),
+        create_toggle_block("🌟 CNBC Top News", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_top]),
+        create_toggle_block("🌍 CNBC World News", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_world]),
+        create_toggle_block("📊 CNBC Economy", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_economy]),
+        create_toggle_block("💰 CNBC Finance", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_finance])
+    ]
+
+    try:
+        month_toggle_id = get_or_create_month_toggle(PAGE_ID, month_title)
+        delete_existing_daily_toggle(month_toggle_id, daily_title)
+        
+        # [Step 1] 일간 토글(껍데기) 생성
+        daily_res = notion.blocks.children.append(
+            block_id=month_toggle_id,
+            children=[create_toggle_block(daily_title)]
+        )
+        daily_toggle_id = daily_res['results'][0]['id']
+
+        # [Step 2] 지수, 상품, 달러인덱스, 환율, 그리고 '주요 뉴스' 껍데기를 일간 토글에 주입
+        daily_items = [
+            create_split_bullet_block(kospi),
+            create_split_bullet_block(nasdaq),
+            create_toggle_block("📦 상품", commodity_children),
+            create_split_bullet_block(dxy),
+            create_toggle_block("💱 환율", fx_children),
+            create_toggle_block("✅ 주요 뉴스") # 자식 없는 빈 토글 생성
+        ]
+        basic_res = notion.blocks.children.append(block_id=daily_toggle_id, children=daily_items)
+        
+        # 방금 생성한 '✅ 주요 뉴스' 토글의 ID 추출 (배열의 가장 마지막 요소)
+        news_toggle_id = basic_res['results'][-1]['id']
+
+        # [Step 3] 뉴스 카테고리와 기사들을 '주요 뉴스' 토글 안으로 별도 주입
+        notion.blocks.children.append(block_id=news_toggle_id, children=news_children)
+        
+        print("✅ 노션 데일리 매크로 노트 업데이트 완벽 성공!")
+    except Exception as e:
+        print(f"❌ 노션 API 연동 중 오류 발생: {e}")
+
+if __name__ == "__main__":
+    main()
