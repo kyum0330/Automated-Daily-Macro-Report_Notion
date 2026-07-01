@@ -31,16 +31,17 @@ else:
 days = ["월", "화", "수", "목", "금", "토", "일"]
 day_of_week = days[target_date.weekday()]
 
-month_title = f"{target_date.year}년 {target_date.month}월"
-daily_title = f"{target_date.month}월 {target_date.day}일 ({day_of_week})"
+month_title = f"▶ {target_date.year}년 {target_date.month}월"
+daily_title = f"▶ {target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
-# 2. 금융 데이터 수집
+# 2. 금융 데이터 수집 및 텍스트 쪼개기 가공
 # ==========================================
 def get_ticker_data(ticker_symbol, display_name):
     try:
         ticker = yf.Ticker(ticker_symbol)
-        hist = ticker.history(period="5d") 
+        hist = ticker.history(period="5d") # 주말 방어용 5일 데이터
+        
         if len(hist) >= 2:
             prev_close = hist['Close'].iloc[-2]
             current_price = hist['Close'].iloc[-1]
@@ -58,14 +59,14 @@ def get_ticker_data(ticker_symbol, display_name):
                 color = "default"
                 sign = ""
                 
-            content = f"{display_name} : {current_price:,.2f} ({sign}{change_percent:.2f}%)"
-            return {"content": content, "color": color}
+            value_text = f" : {current_price:,.2f} ({sign}{change_percent:.2f}%)"
+            return {"name": display_name, "value": value_text, "color": color}
     except Exception as e:
         print(f"⚠️ {display_name} 데이터 수집 실패: {e}")
-    return {"content": f"{display_name} : 데이터 휴장 또는 실패", "color": "default"}
+    return {"name": display_name, "value": " : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 데이터 수집
+# 3. 뉴스 데이터 수집 및 정제
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -93,37 +94,47 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
         return []
 
 # ==========================================
-# 4. 노션 블록 생성기
+# 4. [💡 핵심 수정] 지표명 Bold 처리 전용 블록 생성기
 # ==========================================
-def create_bullet_block(text, color="default", children=None):
-    block = {
-        "object": "block",
-        "type": "bulleted_list_item",
-        "bulleted_list_item": {
-            "rich_text": [{"type": "text", "text": {"content": text}, "annotations": {"color": color}}]
-        }
-    }
-    if children:
-        block["bulleted_list_item"]["children"] = children
-    return block
-
-def create_news_link_block(title, url, summary_text):
+def create_split_bullet_block(data_dict):
+    """지표명은 진하게(default 색상), 수치는 일반체(빨강/파랑)로 쪼개어 한 줄로 합칩니다."""
     return {
         "object": "block",
         "type": "bulleted_list_item",
         "bulleted_list_item": {
-            "rich_text": [{
-                "type": "text",
-                "text": {"content": title, "link": {"url": url}},
-                "annotations": {"color": "default"}
-            }],
-            "children": [{
-                "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {
-                    "rich_text": [{"type": "text", "text": {"content": summary_text}, "annotations": {"color": "gray"}}]
+            "rich_text": [
+                {
+                    "type": "text",
+                    "text": {"content": data_dict["name"]},
+                    "annotations": {"bold": True, "color": "default"} # 지표 제목만 Bold
+                },
+                {
+                    "type": "text",
+                    "text": {"content": data_dict["value"]},
+                    "annotations": {"bold": False, "color": data_dict["color"]} # 수치에만 색상 부여
                 }
-            }]
+            ]
+        }
+    }
+
+def create_news_combined_block(title, url, summary_text):
+    """중중 제한을 우회하기 위해 제목(Bold)과 요약본(Gray)을 하나의 불릿 블록으로 통합합니다."""
+    return {
+        "object": "block",
+        "type": "bulleted_list_item",
+        "bulleted_list_item": {
+            "rich_text": [
+                {
+                    "type": "text",
+                    "text": {"content": f"{title}\n", "link": {"url": url}},
+                    "annotations": {"bold": True} # 기사 제목만 Bold 및 링크
+                },
+                {
+                    "type": "text",
+                    "text": {"content": f"- 요약: {summary_text}"},
+                    "annotations": {"color": "gray"} # 요약본은 회색 처리
+                }
+            ]
         }
     }
 
@@ -133,7 +144,9 @@ def create_toggle_block(title_text, children_blocks):
         "type": "toggle",
         "toggle": {
             "rich_text": [{"type": "text", "text": {"content": title_text}, "annotations": {"bold": True}}],
-            "children": children_blocks if children_blocks else [create_bullet_block("오늘 등록된 뉴스가 없습니다.")]
+            "children": children_blocks if children_blocks else [
+                {"object": "block", "type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": "오늘 등록된 뉴스가 없습니다."}}]}}
+            ]
         }
     }
 
@@ -156,14 +169,15 @@ def delete_existing_daily_toggle(month_toggle_id, daily_name):
         if block['type'] == 'toggle':
             rich_text = block['toggle']['rich_text']
             if rich_text and rich_text[0]['text']['content'] == daily_name:
-                print(f"♻️ 기존 '{daily_name}' 블록 덮어쓰기를 위해 정리 중...")
+                print(f"♻️ 기존 '{daily_name}' 블록 데이터 동기화를 위해 초기화 후 재생성합니다.")
                 notion.blocks.delete(block_id=block['id'])
                 break
 
 # ==========================================
-# 5. 메인 실행 (깊이 제한 우회 3단계 로직 적용)
+# 5. 메인 실행 로직
 # ==========================================
 def main():
+    # 1) 금융 지표 수집
     kospi = get_ticker_data("^KS11", "코스피")
     nasdaq = get_ticker_data("^IXIC", "나스닥")
     wti = get_ticker_data("CL=F", "WTI")
@@ -177,6 +191,7 @@ def main():
     usdkrw = get_ticker_data("KRW=X", "원달러")
     jpykrw = get_ticker_data("JPYKRW=X", "원엔화")
 
+    # 2) 뉴스 수집
     google_url = "https://news.google.com/rss/search?q=%EA%B5%AD%EB%82%B4%20%EC%A6%9D%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"
     ko_news = fetch_rss_news(google_url, limit=5, is_google=True)
     cnbc_top = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100003114", limit=4)
@@ -184,74 +199,55 @@ def main():
     cnbc_economy = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100004183", limit=4)
     cnbc_finance = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100006626", limit=4)
 
+    # 3) 하위 항목 배열 조립 (Bold 분리 생성기 적용)
     commodity_children = [
-        create_bullet_block(wti["content"], wti["color"]),
-        create_bullet_block(gas["content"], gas["color"]),
-        create_bullet_block(gold["content"], gold["color"]),
-        create_bullet_block(silver["content"], silver["color"]),
-        create_bullet_block(copper["content"], copper["color"]),
-        create_bullet_block(corn["content"], corn["color"]),
-        create_bullet_block(rice["content"], rice["color"])
+        create_split_bullet_block(wti),
+        create_split_bullet_block(gas),
+        create_split_bullet_block(gold),
+        create_split_bullet_block(silver),
+        create_split_bullet_block(copper),
+        create_split_bullet_block(corn),
+        create_split_bullet_block(rice)
     ]
     fx_children = [
-        create_bullet_block(usdkrw["content"], usdkrw["color"]),
-        create_bullet_block(jpykrw["content"], jpykrw["color"])
+        create_split_bullet_block(usdkrw),
+        create_split_bullet_block(jpykrw)
     ]
     
-    # 뉴스 카테고리별 블록 
     news_children = [
-        create_toggle_block("🇰🇷 국내 증시 (Google News)", [create_news_link_block(n["title"], n["link"], n["summary"]) for n in ko_news]),
-        create_toggle_block("🌟 CNBC Top News", [create_news_link_block(n["title"], n["link"], n["summary"]) for n in cnbc_top]),
-        create_toggle_block("🌍 CNBC World News", [create_news_link_block(n["title"], n["link"], n["summary"]) for n in cnbc_world]),
-        create_toggle_block("📊 CNBC Economy", [create_news_link_block(n["title"], n["link"], n["summary"]) for n in cnbc_economy]),
-        create_toggle_block("💰 CNBC Finance", [create_news_link_block(n["title"], n["link"], n["summary"]) for n in cnbc_finance])
+        create_toggle_block("🇰🇷 국내 증시 (Google News)", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in ko_news]),
+        create_toggle_block("🌟 CNBC Top News", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_top]),
+        create_toggle_block("🌍 CNBC World News", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_world]),
+        create_toggle_block("📊 CNBC Economy", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_economy]),
+        create_toggle_block("💰 CNBC Finance", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_finance])
     ]
 
+    # 최종 페이로드 조립
+    daily_payload = [
+        create_split_bullet_block(kospi),
+        create_split_bullet_block(nasdaq),
+        create_toggle_block("▶ 상품", commodity_children),
+        create_split_bullet_block(dxy), # 달러 인덱스 독립 배치
+        create_toggle_block("▶ 환율", fx_children),
+        create_toggle_block("▼ 주요 뉴스", news_children)
+    ]
+
+    # 4) 노션 API 전송
     try:
         month_toggle_id = get_or_create_month_toggle(PAGE_ID, month_title)
         delete_existing_daily_toggle(month_toggle_id, daily_title)
         
-        # [Step 1] 일간 토글(껍데기) 생성
-        daily_response = notion.blocks.children.append(
+        notion.blocks.children.append(
             block_id=month_toggle_id,
             children=[{
                 "object": "block",
                 "type": "toggle",
                 "toggle": {
-                    "rich_text": [{"type": "text", "text": {"content": daily_title}, "annotations": {"bold": True}}]
+                    "rich_text": [{"type": "text", "text": {"content": daily_title}, "annotations": {"bold": True}}],
+                    "children": daily_payload
                 }
             }]
         )
-        daily_toggle_id = daily_response['results'][0]['id']
-
-        # [Step 2] 지수, 상품, 환율 및 '주요 뉴스' 껍데기 추가
-        daily_basic_payload = [
-            create_bullet_block(kospi["content"], kospi["color"]),
-            create_bullet_block(nasdaq["content"], nasdaq["color"]),
-            create_toggle_block("📦 상품", commodity_children),
-            create_bullet_block(dxy["content"], dxy["color"]),
-            create_toggle_block("💱 환율", fx_children),
-            {
-                "object": "block",
-                "type": "toggle",
-                "toggle": {
-                    "rich_text": [{"type": "text", "text": {"content": "✅ 주요 뉴스"}, "annotations": {"bold": True}}]
-                }
-            }
-        ]
-        content_response = notion.blocks.children.append(
-            block_id=daily_toggle_id,
-            children=daily_basic_payload
-        )
-        # 방금 넣은 배열의 맨 마지막 요소가 '주요 뉴스' 토글의 ID입니다.
-        news_toggle_id = content_response['results'][-1]['id']
-
-        # [Step 3] 에러가 났던 깊은 계층의 뉴스를 해당 '주요 뉴스' 토글 안에 안전하게 주입
-        notion.blocks.children.append(
-            block_id=news_toggle_id,
-            children=news_children
-        )
-        
         print("✅ 노션 데일리 매크로 노트 업데이트 완벽 성공!")
     except Exception as e:
         print(f"❌ 노션 API 연동 중 오류 발생: {e}")
