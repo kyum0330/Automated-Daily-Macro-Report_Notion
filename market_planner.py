@@ -2,7 +2,7 @@ import os
 import sys
 import datetime
 import feedparser
-import requests  # 💡 [추가] 웹 브라우저 위장을 위해 추가된 라이브러리
+import requests
 from bs4 import BeautifulSoup
 from notion_client import Client
 import yfinance as yf
@@ -19,11 +19,11 @@ if not NOTION_TOKEN or not PAGE_ID:
 
 notion = Client(auth=NOTION_TOKEN)
 
-# 깃허브 서버 시간을 무조건 한국 시간(KST)으로 강제 변환
+# 깃허브 서버 시간을 한국 시간(KST)으로 변환
 KST = datetime.timezone(datetime.timedelta(hours=9))
 now = datetime.datetime.now(KST)
 
-# 한국 시간(KST) 기준으로 오전/오후 판별
+# 시간대에 따라 타겟팅할 날짜 및 모드 분리
 if now.hour < 9: 
     target_date = now - datetime.timedelta(days=1)
     run_mode = "OVERSEAS"
@@ -40,7 +40,7 @@ month_title = f"{target_date.year}년 {target_date.month}월"
 daily_title = f"{target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
-# 2. 금융 데이터 수집
+# 2. 금융 데이터 수집 함수 (원엔화 100배 가공 포함)
 # ==========================================
 def get_ticker_data(ticker_symbol, display_name):
     try:
@@ -49,6 +49,11 @@ def get_ticker_data(ticker_symbol, display_name):
         if len(hist) >= 2:
             prev_close = hist['Close'].iloc[-2]
             current_price = hist['Close'].iloc[-1]
+            
+            # 💡 [핵심 수정] 원엔화 티커일 경우 1엔 단위이므로 100을 곱해 '100엔당 원화'로 조절합니다.
+            if ticker_symbol == "JPYKRW=X":
+                prev_close = prev_close * 100
+                current_price = current_price * 100
             
             change = current_price - prev_close
             change_percent = (change / prev_close) * 100
@@ -70,7 +75,7 @@ def get_ticker_data(ticker_symbol, display_name):
     return {"name": display_name, "value": " : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 데이터 수집 (💡 브라우저 위장 로직 적용)
+# 3. 뉴스 데이터 수집 및 정제
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -81,12 +86,9 @@ def clean_html_text(html_content):
 
 def fetch_rss_news(rss_url, limit=4, is_google=False):
     try:
-        # 💡 [핵심 수정] 봇 차단을 막기 위해 일반 크롬 브라우저의 신분증(User-Agent)을 제시합니다.
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        
-        # requests로 먼저 웹페이지 데이터를 안전하게 가져온 뒤 feedparser에 넘겨줍니다.
         response = requests.get(rss_url, headers=headers, timeout=10)
         feed = feedparser.parse(response.content)
         
@@ -106,7 +108,7 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
         return []
 
 # ==========================================
-# 4. 노션 블록 생성기
+# 4. 노션 BLOCKS 생성 헬퍼
 # ==========================================
 def create_split_bullet_block(data_dict):
     return {
@@ -145,7 +147,7 @@ def create_toggle_block(title_text, children_blocks=None):
     return block
 
 # ==========================================
-# 5. 노션 구조 검색 및 중복 제거
+# 5. 노션 트리 구조 제어 및 중복 방지
 # ==========================================
 def get_or_create_month_toggle(page_id, month_name):
     response = notion.blocks.children.list(block_id=page_id)
@@ -183,7 +185,7 @@ def delete_existing_section(parent_id, section_title):
                 break
 
 # ==========================================
-# 6. 메인 실행 로직 (오전/오후 분할)
+# 6. 메인 실행 (이원화 순환 파이프라인)
 # ==========================================
 def main():
     try:
@@ -191,8 +193,11 @@ def main():
         daily_toggle_id = get_or_create_daily_toggle(month_toggle_id, daily_title)
         delete_existing_section(daily_toggle_id, market_section_title)
 
+        # --------------------------------------------------
+        # 오후 4시 : 국내 마감 브리핑 세션 가동
+        # --------------------------------------------------
         if run_mode == "DOMESTIC":
-            print("🌇 국내 장 마감 데이터 수집 및 조립 중...")
+            print("Base: 국내 장 마감 브리핑 조립 중...")
             kospi = get_ticker_data("^KS11", "코스피")
             google_url = "https://news.google.com/rss/search?q=%EA%B5%AD%EB%82%B4%20%EC%A6%9D%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"
             ko_news = fetch_rss_news(google_url, limit=5, is_google=True)
@@ -206,10 +211,13 @@ def main():
                 block_id=daily_toggle_id,
                 children=[create_toggle_block(market_section_title, domestic_payload)]
             )
-            print("✅ 국내 시장 마감 브리핑 등록 완료!")
+            print("✅ 국내 시장 마감 브리핑 동기화 완료!")
 
+        # --------------------------------------------------
+        # 오전 6시 : 해외 마감 브리핑 세션 가동 (원엔화 100배 포함)
+        # --------------------------------------------------
         elif run_mode == "OVERSEAS":
-            print("🌅 해외 장 마감 데이터 수집 및 조립 중...")
+            print("Base: 해외 장 마감 브리핑 조립 중...")
             nasdaq = get_ticker_data("^IXIC", "나스닥")
             wti = get_ticker_data("CL=F", "WTI")
             gas = get_ticker_data("NG=F", "천연가스")
@@ -220,9 +228,10 @@ def main():
             rice = get_ticker_data("ZR=F", "쌀")
             dxy = get_ticker_data("DX-Y.NYB", "달러 인덱스")
             usdkrw = get_ticker_data("KRW=X", "원달러")
-            jpykrw = get_ticker_data("JPYKRW=X", "원엔화")
+            
+            # 💡 [디스플레이 명 가공] 지표 명칭을 '원엔화(100엔)'로 알기 쉽게 변경합니다.
+            jpykrw = get_ticker_data("JPYKRW=X", "원엔화(100엔)")
 
-            # 💡 브라우저 위장 적용으로 정상 작동합니다.
             cnbc_top = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100003114", limit=4)
             cnbc_world = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100727362", limit=4)
             cnbc_economy = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100004183", limit=4)
@@ -250,7 +259,7 @@ def main():
                 block_id=daily_toggle_id,
                 children=[create_toggle_block(market_section_title, overseas_payload)]
             )
-            print("✅ 해외 시장 마감 브리핑 추가 완료!")
+            print("✅ 해외 시장 마감 브리핑 동기화 완료!")
 
     except Exception as e:
         print(f"❌ 노션 API 연동 중 오류 발생: {e}")
