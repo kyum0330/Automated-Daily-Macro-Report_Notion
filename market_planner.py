@@ -3,7 +3,6 @@ import sys
 import datetime
 import feedparser
 import requests
-import urllib.parse
 from bs4 import BeautifulSoup
 from notion_client import Client
 import yfinance as yf
@@ -83,7 +82,7 @@ def get_ticker_data(ticker_symbol, display_name):
     return {"name": display_name, "value": " : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 데이터 수집 (RSS2JSON 엔진 유지)
+# 3. 뉴스 데이터 수집 (💡 구글 뉴스 우회 엔진으로 통합)
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -92,48 +91,27 @@ def clean_html_text(html_content):
     text = soup.get_text().strip()
     return text[:150] + "..." if len(text) > 150 else text
 
-def fetch_rss_news(rss_url, limit=4, is_google=False):
+def fetch_rss_news(rss_url, limit=4):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
     }
     try:
-        if is_google:
-            response = requests.get(rss_url, headers=headers, timeout=10)
-            feed = feedparser.parse(response.content)
-        else:
-            try:
-                response = requests.get(rss_url, headers=headers, timeout=10)
-                feed = feedparser.parse(response.content)
-                if not feed.entries:
-                    raise ValueError("직접 접속 시 데이터가 비어있음")
-            except:
-                encoded_url = urllib.parse.quote(rss_url, safe='')
-                api_url = f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}"
-                response = requests.get(api_url, timeout=15)
-                data = response.json()
-                
-                if data.get('status') == 'ok':
-                    news_items = []
-                    for item in data.get('items', [])[:limit]:
-                        title = item.get('title', '제목 없음')
-                        link = item.get('link', '')
-                        summary = clean_html_text(item.get('description', ''))
-                        news_items.append({"title": title, "link": link, "summary": summary})
-                    return news_items
-                else:
-                    print(f"⚠️ RSS 우회 서버 응답 실패 ({rss_url})")
-                    return []
+        response = requests.get(rss_url, headers=headers, timeout=10)
+        feed = feedparser.parse(response.content)
         
         news_items = []
         for entry in feed.entries[:limit]:
             title = entry.title
             link = entry.link
-            if is_google and " - " in title:
+            
+            # 구글 뉴스 RSS의 언론사 꼬리표(" - 언론사명") 깔끔하게 제거
+            if " - " in title:
                 title = title.rsplit(" - ", 1)[0]
+                
             summary_raw = entry.get('summary', entry.get('description', '요약 내용 없음'))
             summary = clean_html_text(summary_raw)
             news_items.append({"title": title, "link": link, "summary": summary})
+            
         return news_items
     except Exception as e:
         print(f"⚠️ 뉴스 수집 전체 실패 ({rss_url}): {e}")
@@ -217,7 +195,7 @@ def delete_existing_section(parent_id, section_title):
                 break
 
 # ==========================================
-# 6. 메인 실행 
+# 6. 메인 실행 (노션 조립식 엔진)
 # ==========================================
 def main():
     try:
@@ -236,7 +214,7 @@ def main():
             print("Base: 국내 장 마감 브리핑 조립 중...")
             kospi = get_ticker_data("^KS11", "코스피")
             google_url = "https://news.google.com/rss/search?q=%EA%B5%AD%EB%82%B4%20%EC%A6%9D%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"
-            ko_news = fetch_rss_news(google_url, limit=5, is_google=True)
+            ko_news = fetch_rss_news(google_url, limit=5)
             
             metrics_res = notion.blocks.children.append(
                 block_id=section_id,
@@ -268,11 +246,11 @@ def main():
             usdkrw = get_ticker_data("KRW=X", "원달러")
             jpykrw = get_ticker_data("JPYKRW=X", "원엔화(100엔)")
 
-            # 💡 [핵심 해결] 모든 주소를 성공이 확인된 공식 포맷(www.cnbc.com/id/.../device/rss/rss.html)으로 통일!
-            cnbc_top = fetch_rss_news("https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4)
-            cnbc_world = fetch_rss_news("https://www.cnbc.com/id/100727362/device/rss/rss.html", limit=4)
-            cnbc_economy = fetch_rss_news("https://www.cnbc.com/id/100004183/device/rss/rss.html", limit=4)
-            cnbc_finance = fetch_rss_news("https://www.cnbc.com/id/100006626/device/rss/rss.html", limit=4)
+            # 💡 [핵심 해결] Google News US 서버를 이용해 'CNBC 사이트 내의 카테고리별 뉴스'를 강제로 색인합니다.
+            cnbc_top = fetch_rss_news("https://news.google.com/rss/search?q=site:cnbc.com+when:1d&hl=en-US&gl=US&ceid=US:en", limit=4)
+            cnbc_world = fetch_rss_news("https://news.google.com/rss/search?q=site:cnbc.com+World+when:1d&hl=en-US&gl=US&ceid=US:en", limit=4)
+            cnbc_economy = fetch_rss_news("https://news.google.com/rss/search?q=site:cnbc.com+Economy+when:1d&hl=en-US&gl=US&ceid=US:en", limit=4)
+            cnbc_finance = fetch_rss_news("https://news.google.com/rss/search?q=site:cnbc.com+Finance+when:1d&hl=en-US&gl=US&ceid=US:en", limit=4)
 
             commodity_children = [create_split_bullet_block(x) for x in [wti, gas, gold, silver, copper, corn, rice]]
             fx_children = [create_split_bullet_block(usdkrw), create_split_bullet_block(jpykrw)]
