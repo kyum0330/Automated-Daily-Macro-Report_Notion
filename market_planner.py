@@ -3,7 +3,7 @@ import sys
 import datetime
 import feedparser
 import requests
-import urllib.parse # 💡 CNBC 우회용 URL 인코딩을 위해 추가
+import urllib.parse
 from bs4 import BeautifulSoup
 from notion_client import Client
 import yfinance as yf
@@ -41,11 +41,10 @@ month_title = f"{target_date.year}년 {target_date.month}월"
 daily_title = f"{target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
-# 2. 금융 데이터 수집 함수 (원엔화 고정밀 교차환율 적용)
+# 2. 금융 데이터 수집 함수 (원엔화 100배 가공 포함)
 # ==========================================
 def get_ticker_data(ticker_symbol, display_name):
     try:
-        # 💡 [핵심 수정 1] 원엔화 티커일 경우 정밀도 향상을 위해 교차 환율(달러/원, 달러/엔)로 계산합니다.
         if ticker_symbol == "JPYKRW=X":
             krw = yf.Ticker("KRW=X").history(period="5d")
             jpy = yf.Ticker("JPY=X").history(period="5d")
@@ -84,7 +83,7 @@ def get_ticker_data(ticker_symbol, display_name):
     return {"name": display_name, "value": " : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 데이터 수집 (CNBC 프록시 우회 적용)
+# 3. 뉴스 데이터 수집 및 정제 (💡 RSS2JSON 엔진 교체)
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -95,31 +94,41 @@ def clean_html_text(html_content):
 
 def fetch_rss_news(rss_url, limit=4, is_google=False):
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        
-        # 💡 [핵심 수정 2] CNBC 등 방화벽이 강한 사이트는 AllOrigins 무료 프록시를 통해 우회 접속합니다.
-        if "cnbc.com" in rss_url:
-            encoded_url = urllib.parse.quote(rss_url, safe='')
-            request_url = f"https://api.allorigins.win/raw?url={encoded_url}"
-        else:
-            request_url = rss_url
+        # 1. 구글 뉴스는 방화벽이 없어 기존처럼 직접 가져옵니다.
+        if is_google:
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            response = requests.get(rss_url, headers=headers, timeout=10)
+            feed = feedparser.parse(response.content)
             
-        response = requests.get(request_url, headers=headers, timeout=15)
-        feed = feedparser.parse(response.content)
-        
-        news_items = []
-        for entry in feed.entries[:limit]:
-            title = entry.title
-            link = entry.link
-            if is_google and " - " in title:
-                title = title.rsplit(" - ", 1)[0]
+            news_items = []
+            for entry in feed.entries[:limit]:
+                title = entry.title
+                if " - " in title:
+                    title = title.rsplit(" - ", 1)[0]
+                summary = clean_html_text(entry.get('summary', entry.get('description', '요약 내용 없음')))
+                news_items.append({"title": title, "link": entry.link, "summary": summary})
+            return news_items
+            
+        # 2. 💡 CNBC 등 해외 언론사는 방화벽 우회를 위해 'rss2json' 전문 API를 사용합니다.
+        else:
+            encoded_url = urllib.parse.quote(rss_url, safe='')
+            api_url = f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}"
+            
+            response = requests.get(api_url, timeout=15)
+            data = response.json()
+            
+            if data.get('status') != 'ok':
+                print(f"⚠️ RSS2JSON 변환 실패 ({rss_url})")
+                return []
                 
-            summary_raw = entry.get('summary', entry.get('description', '요약 내용 없음'))
-            summary = clean_html_text(summary_raw)
-            news_items.append({"title": title, "link": link, "summary": summary})
-        return news_items
+            news_items = []
+            for item in data.get('items', [])[:limit]:
+                title = item.get('title', '제목 없음')
+                link = item.get('link', '')
+                summary = clean_html_text(item.get('description', ''))
+                news_items.append({"title": title, "link": link, "summary": summary})
+            return news_items
+
     except Exception as e:
         print(f"⚠️ 뉴스 수집 실패 ({rss_url}): {e}")
         return []
@@ -248,7 +257,7 @@ def main():
             
             jpykrw = get_ticker_data("JPYKRW=X", "원엔화(100엔)")
 
-            # 💡 [핵심 수정 3] 가장 안정적인 CNBC 공식 표준 RSS 주소로 일괄 교체
+            # 가장 안정적인 CNBC 공식 표준 RSS 주소 유지
             cnbc_top = fetch_rss_news("https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4)
             cnbc_world = fetch_rss_news("https://www.cnbc.com/id/100727362/device/rss/rss.html", limit=4)
             cnbc_economy = fetch_rss_news("https://www.cnbc.com/id/100004183/device/rss/rss.html", limit=4)
