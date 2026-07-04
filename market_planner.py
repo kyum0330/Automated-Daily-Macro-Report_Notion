@@ -3,6 +3,7 @@ import sys
 import datetime
 import feedparser
 import requests
+import urllib.parse # 💡 CNBC 우회용 URL 인코딩을 위해 추가
 from bs4 import BeautifulSoup
 from notion_client import Client
 import yfinance as yf
@@ -40,42 +41,50 @@ month_title = f"{target_date.year}년 {target_date.month}월"
 daily_title = f"{target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
-# 2. 금융 데이터 수집 함수 (원엔화 100배 가공 포함)
+# 2. 금융 데이터 수집 함수 (원엔화 고정밀 교차환율 적용)
 # ==========================================
 def get_ticker_data(ticker_symbol, display_name):
     try:
-        ticker = yf.Ticker(ticker_symbol)
-        hist = ticker.history(period="5d") 
-        if len(hist) >= 2:
-            prev_close = hist['Close'].iloc[-2]
-            current_price = hist['Close'].iloc[-1]
+        # 💡 [핵심 수정 1] 원엔화 티커일 경우 정밀도 향상을 위해 교차 환율(달러/원, 달러/엔)로 계산합니다.
+        if ticker_symbol == "JPYKRW=X":
+            krw = yf.Ticker("KRW=X").history(period="5d")
+            jpy = yf.Ticker("JPY=X").history(period="5d")
             
-            # 💡 [핵심 수정] 원엔화 티커일 경우 1엔 단위이므로 100을 곱해 '100엔당 원화'로 조절합니다.
-            if ticker_symbol == "JPYKRW=X":
-                prev_close = prev_close * 100
-                current_price = current_price * 100
-            
-            change = current_price - prev_close
-            change_percent = (change / prev_close) * 100
-            
-            if change > 0:
-                color = "red"
-                sign = "+"
-            elif change < 0:
-                color = "blue"
-                sign = ""
+            if len(krw) >= 2 and len(jpy) >= 2:
+                prev_close = (krw['Close'].iloc[-2] / jpy['Close'].iloc[-2]) * 100
+                current_price = (krw['Close'].iloc[-1] / jpy['Close'].iloc[-1]) * 100
             else:
-                color = "default"
-                sign = ""
-                
-            value_text = f" : {current_price:,.2f} ({sign}{change_percent:.2f}%)"
-            return {"name": display_name, "value": value_text, "color": color}
+                raise ValueError("교차 환율 데이터 부족")
+        else:
+            ticker = yf.Ticker(ticker_symbol)
+            hist = ticker.history(period="5d") 
+            if len(hist) >= 2:
+                prev_close = hist['Close'].iloc[-2]
+                current_price = hist['Close'].iloc[-1]
+            else:
+                raise ValueError("데이터 부족")
+        
+        change = current_price - prev_close
+        change_percent = (change / prev_close) * 100
+        
+        if change > 0:
+            color = "red"
+            sign = "+"
+        elif change < 0:
+            color = "blue"
+            sign = ""
+        else:
+            color = "default"
+            sign = ""
+            
+        value_text = f" : {current_price:,.2f} ({sign}{change_percent:.2f}%)"
+        return {"name": display_name, "value": value_text, "color": color}
     except Exception as e:
         print(f"⚠️ {display_name} 데이터 수집 실패: {e}")
     return {"name": display_name, "value": " : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 데이터 수집 및 정제
+# 3. 뉴스 데이터 수집 (CNBC 프록시 우회 적용)
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -89,7 +98,15 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         }
-        response = requests.get(rss_url, headers=headers, timeout=10)
+        
+        # 💡 [핵심 수정 2] CNBC 등 방화벽이 강한 사이트는 AllOrigins 무료 프록시를 통해 우회 접속합니다.
+        if "cnbc.com" in rss_url:
+            encoded_url = urllib.parse.quote(rss_url, safe='')
+            request_url = f"https://api.allorigins.win/raw?url={encoded_url}"
+        else:
+            request_url = rss_url
+            
+        response = requests.get(request_url, headers=headers, timeout=15)
         feed = feedparser.parse(response.content)
         
         news_items = []
@@ -214,7 +231,7 @@ def main():
             print("✅ 국내 시장 마감 브리핑 동기화 완료!")
 
         # --------------------------------------------------
-        # 오전 6시 : 해외 마감 브리핑 세션 가동 (원엔화 100배 포함)
+        # 오전 6시 : 해외 마감 브리핑 세션 가동
         # --------------------------------------------------
         elif run_mode == "OVERSEAS":
             print("Base: 해외 장 마감 브리핑 조립 중...")
@@ -229,13 +246,13 @@ def main():
             dxy = get_ticker_data("DX-Y.NYB", "달러 인덱스")
             usdkrw = get_ticker_data("KRW=X", "원달러")
             
-            # 💡 [디스플레이 명 가공] 지표 명칭을 '원엔화(100엔)'로 알기 쉽게 변경합니다.
             jpykrw = get_ticker_data("JPYKRW=X", "원엔화(100엔)")
 
-            cnbc_top = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100003114", limit=4)
-            cnbc_world = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100727362", limit=4)
-            cnbc_economy = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100004183", limit=4)
-            cnbc_finance = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100006626", limit=4)
+            # 💡 [핵심 수정 3] 가장 안정적인 CNBC 공식 표준 RSS 주소로 일괄 교체
+            cnbc_top = fetch_rss_news("https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4)
+            cnbc_world = fetch_rss_news("https://www.cnbc.com/id/100727362/device/rss/rss.html", limit=4)
+            cnbc_economy = fetch_rss_news("https://www.cnbc.com/id/100004183/device/rss/rss.html", limit=4)
+            cnbc_finance = fetch_rss_news("https://www.cnbc.com/id/100006626/device/rss/rss.html", limit=4)
 
             commodity_children = [create_split_bullet_block(x) for x in [wti, gas, gold, silver, copper, corn, rice]]
             fx_children = [create_split_bullet_block(usdkrw), create_split_bullet_block(jpykrw)]
