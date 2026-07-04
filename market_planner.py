@@ -243,7 +243,7 @@ def main():
                 create_toggle_block("📦 상품 (원자재)", commodity_children),
                 create_split_bullet_block(dxy),
                 create_toggle_block("💱 환율 지표", fx_children),
-                create_toggle_block("▼ 해외 주요 뉴스 (CNBC)", overseas_news_children)
+                create_toggle_block("해외 주요 뉴스 (CNBC)", overseas_news_children)
             ]
             
             notion.blocks.children.append(
