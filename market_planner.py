@@ -83,7 +83,7 @@ def get_ticker_data(ticker_symbol, display_name):
     return {"name": display_name, "value": " : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 데이터 수집 (다중 대체 라우팅 적용)
+# 3. 뉴스 데이터 수집 (RSS2JSON 엔진 유지)
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -102,14 +102,12 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
             response = requests.get(rss_url, headers=headers, timeout=10)
             feed = feedparser.parse(response.content)
         else:
-            # 1차 시도: 직접 보안 우회 헤더로 파싱 요청
             try:
                 response = requests.get(rss_url, headers=headers, timeout=10)
                 feed = feedparser.parse(response.content)
                 if not feed.entries:
-                    raise ValueError("피드가 비어있음")
+                    raise ValueError("직접 접속 시 데이터가 비어있음")
             except:
-                # 2차 시도: 타임아웃 발생 시 전문 외부 인코딩 JSON 프록시로 변환 가공
                 encoded_url = urllib.parse.quote(rss_url, safe='')
                 api_url = f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}"
                 response = requests.get(api_url, timeout=15)
@@ -124,6 +122,7 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
                         news_items.append({"title": title, "link": link, "summary": summary})
                     return news_items
                 else:
+                    print(f"⚠️ RSS 우회 서버 응답 실패 ({rss_url})")
                     return []
         
         news_items = []
@@ -137,7 +136,7 @@ def fetch_rss_news(rss_url, limit=4, is_google=False):
             news_items.append({"title": title, "link": link, "summary": summary})
         return news_items
     except Exception as e:
-        print(f"⚠️ 뉴스 수집 오류 ({rss_url}): {e}")
+        print(f"⚠️ 뉴스 수집 전체 실패 ({rss_url}): {e}")
         return []
 
 # ==========================================
@@ -180,7 +179,7 @@ def create_toggle_block(title_text, children_blocks=None):
     return block
 
 # ==========================================
-# 5. 노션 구조 검색 및 중복 방지
+# 5. 노션 트리 구조 제어 및 중복 방지
 # ==========================================
 def get_or_create_month_toggle(page_id, month_name):
     response = notion.blocks.children.list(block_id=page_id)
@@ -218,7 +217,7 @@ def delete_existing_section(parent_id, section_title):
                 break
 
 # ==========================================
-# 6. 메인 실행 (노션 조립식 엔진)
+# 6. 메인 실행 
 # ==========================================
 def main():
     try:
@@ -254,7 +253,7 @@ def main():
             )
             print("✅ 국내 시장 마감 브리핑 동기화 완료!")
 
-        # --- 오전 6시 : 해외 마감 브리핑 세션 (💡 CNBC 채널 주소 정밀 보정 완료) ---
+        # --- 오전 6시 : 해외 마감 브리핑 세션 ---
         elif run_mode == "OVERSEAS":
             print("Base: 해외 장 마감 브리핑 조립 중...")
             nasdaq = get_ticker_data("^IXIC", "나스닥")
@@ -269,11 +268,11 @@ def main():
             usdkrw = get_ticker_data("KRW=X", "원달러")
             jpykrw = get_ticker_data("JPYKRW=X", "원엔화(100엔)")
 
-            # 💡 4개 채널 모두 타임아웃 딜레이가 없고 데이터가 풍부한 개방형 RSS 채널 주소로 전면 동기화했습니다.
-            cnbc_top = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100003114", limit=4)
+            # 💡 [핵심 해결] 모든 주소를 성공이 확인된 공식 포맷(www.cnbc.com/id/.../device/rss/rss.html)으로 통일!
+            cnbc_top = fetch_rss_news("https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4)
             cnbc_world = fetch_rss_news("https://www.cnbc.com/id/100727362/device/rss/rss.html", limit=4)
-            cnbc_economy = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100004183", limit=4)
-            cnbc_finance = fetch_rss_news("https://search.cnbc.com/rs/search/combinedcms/view.xml?profile=100006626", limit=4)
+            cnbc_economy = fetch_rss_news("https://www.cnbc.com/id/100004183/device/rss/rss.html", limit=4)
+            cnbc_finance = fetch_rss_news("https://www.cnbc.com/id/100006626/device/rss/rss.html", limit=4)
 
             commodity_children = [create_split_bullet_block(x) for x in [wti, gas, gold, silver, copper, corn, rice]]
             fx_children = [create_split_bullet_block(usdkrw), create_split_bullet_block(jpykrw)]
@@ -285,7 +284,7 @@ def main():
                 create_toggle_block("💰 CNBC Finance", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_finance])
             ]
 
-            metrics_res = notification_blocks = notion.blocks.children.append(
+            metrics_res = notion.blocks.children.append(
                 block_id=section_id,
                 children=[
                     create_split_bullet_block(nasdaq),
