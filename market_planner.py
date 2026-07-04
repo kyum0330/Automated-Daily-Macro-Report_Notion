@@ -41,7 +41,7 @@ month_title = f"{target_date.year}년 {target_date.month}월"
 daily_title = f"{target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
-# 2. 금융 데이터 수집 함수 (원엔화 100배 가공 포함)
+# 2. 금융 데이터 수집 함수
 # ==========================================
 def get_ticker_data(ticker_symbol, display_name):
     try:
@@ -83,7 +83,7 @@ def get_ticker_data(ticker_symbol, display_name):
     return {"name": display_name, "value": " : 데이터 휴장 또는 실패", "color": "default"}
 
 # ==========================================
-# 3. 뉴스 데이터 수집 및 정제 (💡 RSS2JSON 엔진 교체)
+# 3. 뉴스 데이터 수집 (이중 안전장치 적용)
 # ==========================================
 def clean_html_text(html_content):
     if not html_content:
@@ -93,44 +93,53 @@ def clean_html_text(html_content):
     return text[:150] + "..." if len(text) > 150 else text
 
 def fetch_rss_news(rss_url, limit=4, is_google=False):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    }
     try:
-        # 1. 구글 뉴스는 방화벽이 없어 기존처럼 직접 가져옵니다.
         if is_google:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
             response = requests.get(rss_url, headers=headers, timeout=10)
             feed = feedparser.parse(response.content)
-            
-            news_items = []
-            for entry in feed.entries[:limit]:
-                title = entry.title
-                if " - " in title:
-                    title = title.rsplit(" - ", 1)[0]
-                summary = clean_html_text(entry.get('summary', entry.get('description', '요약 내용 없음')))
-                news_items.append({"title": title, "link": entry.link, "summary": summary})
-            return news_items
-            
-        # 2. 💡 CNBC 등 해외 언론사는 방화벽 우회를 위해 'rss2json' 전문 API를 사용합니다.
         else:
-            encoded_url = urllib.parse.quote(rss_url, safe='')
-            api_url = f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}"
-            
-            response = requests.get(api_url, timeout=15)
-            data = response.json()
-            
-            if data.get('status') != 'ok':
-                print(f"⚠️ RSS2JSON 변환 실패 ({rss_url})")
-                return []
+            # 💡 [보완] 1차 시도: 직접 접속 시도 (타임아웃 방지)
+            try:
+                response = requests.get(rss_url, headers=headers, timeout=10)
+                feed = feedparser.parse(response.content)
+                if not feed.entries:
+                    raise ValueError("직접 접속 시 데이터가 비어있음")
+            except:
+                # 💡 [보완] 2차 시도: 1차 실패 시 RSS2JSON 프록시 우회
+                encoded_url = urllib.parse.quote(rss_url, safe='')
+                api_url = f"https://api.rss2json.com/v1/api.json?rss_url={encoded_url}"
+                response = requests.get(api_url, timeout=15)
+                data = response.json()
                 
-            news_items = []
-            for item in data.get('items', [])[:limit]:
-                title = item.get('title', '제목 없음')
-                link = item.get('link', '')
-                summary = clean_html_text(item.get('description', ''))
-                news_items.append({"title": title, "link": link, "summary": summary})
-            return news_items
-
+                if data.get('status') == 'ok':
+                    news_items = []
+                    for item in data.get('items', [])[:limit]:
+                        title = item.get('title', '제목 없음')
+                        link = item.get('link', '')
+                        summary = clean_html_text(item.get('description', ''))
+                        news_items.append({"title": title, "link": link, "summary": summary})
+                    return news_items
+                else:
+                    print(f"⚠️ RSS 우회 서버 응답 실패 ({rss_url})")
+                    return []
+        
+        # feedparser 데이터 변환 공통 로직
+        news_items = []
+        for entry in feed.entries[:limit]:
+            title = entry.title
+            link = entry.link
+            if is_google and " - " in title:
+                title = title.rsplit(" - ", 1)[0]
+            summary_raw = entry.get('summary', entry.get('description', '요약 내용 없음'))
+            summary = clean_html_text(summary_raw)
+            news_items.append({"title": title, "link": link, "summary": summary})
+        return news_items
     except Exception as e:
-        print(f"⚠️ 뉴스 수집 실패 ({rss_url}): {e}")
+        print(f"⚠️ 뉴스 수집 전체 실패 ({rss_url}): {e}")
         return []
 
 # ==========================================
@@ -173,7 +182,7 @@ def create_toggle_block(title_text, children_blocks=None):
     return block
 
 # ==========================================
-# 5. 노션 트리 구조 제어 및 중복 방지
+# 5. 노션 구조 검색 및 중복 방지
 # ==========================================
 def get_or_create_month_toggle(page_id, month_name):
     response = notion.blocks.children.list(block_id=page_id)
@@ -211,7 +220,7 @@ def delete_existing_section(parent_id, section_title):
                 break
 
 # ==========================================
-# 6. 메인 실행 (이원화 순환 파이프라인)
+# 6. 메인 실행 (💡 노션 깊이 한계 완벽 우회 조립식)
 # ==========================================
 def main():
     try:
@@ -220,7 +229,16 @@ def main():
         delete_existing_section(daily_toggle_id, market_section_title)
 
         # --------------------------------------------------
-        # 오후 4시 : 국내 마감 브리핑 세션 가동
+        # 1단계: 브리핑 섹션(껍데기)부터 먼저 생성
+        # --------------------------------------------------
+        section_res = notion.blocks.children.append(
+            block_id=daily_toggle_id,
+            children=[create_toggle_block(market_section_title)]
+        )
+        section_id = section_res['results'][0]['id']
+
+        # --------------------------------------------------
+        # 오후 4시 : 국내 마감 브리핑 세션
         # --------------------------------------------------
         if run_mode == "DOMESTIC":
             print("Base: 국내 장 마감 브리핑 조립 중...")
@@ -228,19 +246,25 @@ def main():
             google_url = "https://news.google.com/rss/search?q=%EA%B5%AD%EB%82%B4%20%EC%A6%9D%EC%8B%9C&hl=ko&gl=KR&ceid=KR:ko"
             ko_news = fetch_rss_news(google_url, limit=5, is_google=True)
             
-            domestic_payload = [
-                create_split_bullet_block(kospi),
-                create_toggle_block("📰 국내 주요 뉴스 (Google)", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in ko_news])
-            ]
+            # 2단계: 코스피 지수와 빈 뉴스 토글 생성
+            metrics_res = notion.blocks.children.append(
+                block_id=section_id,
+                children=[
+                    create_split_bullet_block(kospi),
+                    create_toggle_block("📰 국내 주요 뉴스 (Google)")
+                ]
+            )
+            news_parent_id = metrics_res['results'][-1]['id']
             
+            # 3단계: 뉴스 기사 내용만 따로 주입
             notion.blocks.children.append(
-                block_id=daily_toggle_id,
-                children=[create_toggle_block(market_section_title, domestic_payload)]
+                block_id=news_parent_id,
+                children=[create_news_combined_block(n["title"], n["link"], n["summary"]) for n in ko_news]
             )
             print("✅ 국내 시장 마감 브리핑 동기화 완료!")
 
         # --------------------------------------------------
-        # 오전 6시 : 해외 마감 브리핑 세션 가동
+        # 오전 6시 : 해외 마감 브리핑 세션
         # --------------------------------------------------
         elif run_mode == "OVERSEAS":
             print("Base: 해외 장 마감 브리핑 조립 중...")
@@ -254,10 +278,8 @@ def main():
             rice = get_ticker_data("ZR=F", "쌀")
             dxy = get_ticker_data("DX-Y.NYB", "달러 인덱스")
             usdkrw = get_ticker_data("KRW=X", "원달러")
-            
             jpykrw = get_ticker_data("JPYKRW=X", "원엔화(100엔)")
 
-            # 가장 안정적인 CNBC 공식 표준 RSS 주소 유지
             cnbc_top = fetch_rss_news("https://www.cnbc.com/id/100003114/device/rss/rss.html", limit=4)
             cnbc_world = fetch_rss_news("https://www.cnbc.com/id/100727362/device/rss/rss.html", limit=4)
             cnbc_economy = fetch_rss_news("https://www.cnbc.com/id/100004183/device/rss/rss.html", limit=4)
@@ -273,17 +295,23 @@ def main():
                 create_toggle_block("💰 CNBC Finance", [create_news_combined_block(n["title"], n["link"], n["summary"]) for n in cnbc_finance])
             ]
 
-            overseas_payload = [
-                create_split_bullet_block(nasdaq),
-                create_toggle_block("📦 상품 (원자재)", commodity_children),
-                create_split_bullet_block(dxy),
-                create_toggle_block("💱 환율 지표", fx_children),
-                create_toggle_block("해외 주요 뉴스 (CNBC)", overseas_news_children)
-            ]
-            
+            # 2단계: 상품, 환율, 그리고 "빈" 해외 주요 뉴스 토글 추가 (깊이 제한 우회)
+            metrics_res = notion.blocks.children.append(
+                block_id=section_id,
+                children=[
+                    create_split_bullet_block(nasdaq),
+                    create_toggle_block("📦 상품 (원자재)", commodity_children),
+                    create_split_bullet_block(dxy),
+                    create_toggle_block("💱 환율 지표", fx_children),
+                    create_toggle_block("해외 주요 뉴스 (CNBC)") # 껍데기만 만듦
+                ]
+            )
+            news_parent_id = metrics_res['results'][-1]['id']
+
+            # 3단계: 완성된 뉴스 블록들을 빈 뉴스 토글에 쏙 밀어넣음
             notion.blocks.children.append(
-                block_id=daily_toggle_id,
-                children=[create_toggle_block(market_section_title, overseas_payload)]
+                block_id=news_parent_id,
+                children=overseas_news_children
             )
             print("✅ 해외 시장 마감 브리핑 동기화 완료!")
 
