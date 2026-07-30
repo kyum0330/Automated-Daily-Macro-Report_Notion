@@ -40,25 +40,38 @@ month_title = f"{target_date.year}년 {target_date.month}월"
 daily_title = f"{target_date.month}월 {target_date.day}일 ({day_of_week})"
 
 # ==========================================
-# 2. 금융 데이터 수집 함수
+# 2. 금융 데이터 수집 함수 (주말 데이터 누락 방지 완벽 대응)
 # ==========================================
 def get_ticker_data(ticker_symbol, display_name):
     try:
+        # 1. 원엔화 (교차환율) 예외 처리
         if ticker_symbol == "JPYKRW=X":
-            krw = yf.Ticker("KRW=X").history(period="5d")
-            jpy = yf.Ticker("JPY=X").history(period="5d")
+            krw = yf.Ticker("KRW=X").history(period="1mo").dropna()
+            jpy = yf.Ticker("JPY=X").history(period="1mo").dropna()
             
             if len(krw) >= 2 and len(jpy) >= 2:
                 prev_close = (krw['Close'].iloc[-2] / jpy['Close'].iloc[-2]) * 100
                 current_price = (krw['Close'].iloc[-1] / jpy['Close'].iloc[-1]) * 100
             else:
                 raise ValueError("교차 환율 데이터 부족")
+                
+        # 2. 일반 지수/상품 처리
         else:
             ticker = yf.Ticker(ticker_symbol)
-            hist = ticker.history(period="5d") 
+            # 💡 [해결 1] period="5d"의 데이터 누락 버그를 피하기 위해 "1mo"로 넉넉하게 가져오고 빈칸(NaN)을 제거합니다.
+            hist = ticker.history(period="1mo").dropna(subset=['Close'])
+            
             if len(hist) >= 2:
-                prev_close = hist['Close'].iloc[-2]
                 current_price = hist['Close'].iloc[-1]
+                
+                # 💡 [해결 2] 야후 파이낸스의 '공식 전일 종가' 데이터를 우선적으로 불러와 금요일 데이터 누락을 원천 차단합니다.
+                info_prev_close = ticker.info.get('regularMarketPreviousClose')
+                
+                # info 정보가 정상적으로 존재하면 그것을 사용하고, 없다면 표의 뒤에서 두 번째(-2) 값을 사용합니다.
+                if info_prev_close and info_prev_close > 0:
+                    prev_close = info_prev_close
+                else:
+                    prev_close = hist['Close'].iloc[-2]
             else:
                 raise ValueError("데이터 부족")
         
